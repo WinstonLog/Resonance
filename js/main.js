@@ -25,25 +25,35 @@ window.S = window.S || {};
 
   S.Skins.applyToCells();
 
-  // Титульный экран готов
   S.SDK.notifyReady();
 
   let lastT = performance.now();
   function loop(t){
     const dt = Math.min(0.05, (t - lastT)/1000 || 0);
     lastT = t;
+
     const m = S.Game.state.mode;
+
     if(m === 'paused' || m === 'howto' || m === 'settings'){
+      // Игровой мир заморожен, но общий счётчик времени идёт
       S.Game.state.time += dt;
+
+      // Туториал тикает даже на паузе — чтобы шаги 2 → 3
+      // не застревали, если игрок отвлёкся / открыл настройки.
+      // Не тикает только на титульном экране — там туториал не нужен.
+      if (S.Tutorial && S.Tutorial.step !== 0){
+        S.Tutorial.update(dt);
+      }
     } else {
       S.Game.update(dt);
     }
+
     S.Renderer.render();
     requestAnimationFrame(loop);
   }
   requestAnimationFrame(loop);
 
-  // Инициализация VK Bridge (короткий таймаут, чтобы не блокировать запуск)
+  // Инициализация VK Bridge
   const sdkPromise = S.SDK.init();
   const timeout = new Promise(res => setTimeout(()=> res('timeout'), 4000));
   try { await Promise.race([sdkPromise, timeout]); }

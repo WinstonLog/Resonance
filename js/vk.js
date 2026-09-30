@@ -1,19 +1,12 @@
 window.S = window.S || {};
 
-/* ============================================================
-   VK Bridge. VKWebAppInit вызывается РОВНО ОДИН РАЗ — внутри
-   S.SDK.init(). Никаких IIFE-дублей.
-   ============================================================ */
-
-/* Глушилка unhandledrejection от внутренних модулей VK Bridge. */
+/* Глушилка unhandledrejection от VK Bridge */
 window.addEventListener('unhandledrejection', (e) => {
   const r = e.reason || {};
   const stack = (r && r.stack) || '';
   let msg = '';
   try {
-    msg = typeof r === 'string'
-      ? r
-      : (r && (r.message || r.error_msg)) || String(r);
+    msg = typeof r === 'string' ? r : (r && (r.message || r.error_msg)) || String(r);
   } catch(_) { msg = ''; }
 
   const isVkInternal =
@@ -60,14 +53,8 @@ S.SDK = {
       try{
         this.vk.send(method, params)
           .then(res => resolve(res || null))
-          .catch(err => {
-            console.log('[VK] ' + method + ' rejected:', err);
-            resolve(null);
-          });
-      }catch(e){
-        console.log('[VK] ' + method + ' threw:', e);
-        resolve(null);
-      }
+          .catch(err => { console.log('[VK] ' + method + ' rejected:', err); resolve(null); });
+      }catch(e){ console.log('[VK] ' + method + ' threw:', e); resolve(null); }
     });
   },
 
@@ -108,7 +95,7 @@ S.SDK = {
     this.ready = true;
   },
 
-  notifyReady(){ /* VK не требует отдельного события */ },
+  notifyReady(){ /* no-op */ },
 
   gameplayStart(){
     if (!this.ready || this._gameplayActive) return;
@@ -121,21 +108,15 @@ S.SDK = {
     this._sendQuiet('VKWebAppGameplayStop');
   },
 
-  /* ---------- Cloud storage ---------- */
   async loadCloud(){
     if (!this.vk || !this.ready) return null;
-
-    const keys = [
-      'level','best','tutorialDone','achievements','hints',
-      'ratingPoints','ratingPerfect','ratingLevels'
-    ];
+    const keys = ['level','best','tutorialDone','achievements','hints',
+                  'ratingPoints','ratingPerfect','ratingLevels'];
     const res = await this._send('VKWebAppStorageGet', { keys });
     if (!res || !res.keys) return null;
-
     const out = {};
     res.keys.forEach(item => {
-      if (!item || !item.key) return;
-      if (item.value === '' || item.value === undefined) return;
+      if (!item || !item.key || item.value === '' || item.value === undefined) return;
       try { out[item.key] = JSON.parse(item.value); }
       catch(e){ out[item.key] = item.value; }
     });
@@ -144,21 +125,16 @@ S.SDK = {
 
   async saveCloud(data){
     if (!this.vk || !this.ready) return;
-    const keys = Object.keys(data).map(key => ({
-      key,
-      value: JSON.stringify(data[key])
-    }));
+    const keys = Object.keys(data).map(key => ({ key, value: JSON.stringify(data[key]) }));
     if (!keys.length) return;
     await this._send('VKWebAppStorageSet', { keys });
   },
 
-  /* ---------- Favorites ---------- */
   async addToFavorites(){
     const res = await this._send('VKWebAppAddToFavorites');
     return !!(res && res.result);
   },
 
-  /* ---------- Community (Support) ---------- */
   async joinCommunity(groupId){
     if (!groupId) return false;
     const res = await this._send('VKWebAppJoinGroup', { group_id: groupId });
@@ -172,12 +148,12 @@ S.SDK = {
 };
 
 /* ============================================================
-   Пауза игры и звука на время рекламы.
+   Реклама с паузой игры и полным выключением звука.
    VK Bridge не даёт onOpen/onClose для ShowNativeAds — промис
-   резолвится только когда реклама закрыта. Поэтому:
-   1) ставим игру на паузу и глушим звук ПЕРЕД показом;
-   2) ждём промис;
-   3) возвращаем всё как было ПОСЛЕ закрытия.
+   резолвится, когда реклама закрыта. Поэтому:
+     1) muteForAd() + mode='paused' ПЕРЕД показом
+     2) await ShowNativeAds
+     3) unmuteAfterAd() + mode='playing' ПОСЛЕ закрытия
    ============================================================ */
 S.Ads = {
   lastShown: 0,
@@ -187,13 +163,11 @@ S.Ads = {
     return S.SDK.ready && (Date.now() - this.lastShown) > S.CONFIG.AD_COOLDOWN_MS;
   },
 
-  /* Ставит игру на паузу, глушит музыку и сообщает VK, что
-     геймплей остановлен. Не показывает экран паузы. */
   _suspendForAd(){
     if (this._suspended) return;
     this._suspended = true;
 
-    // Пауза игрового процесса без открытия экрана "Пауза"
+    // 1. Пауза игры без экрана "Пауза"
     try {
       if (S.Game && S.Game.state.mode === 'playing'){
         S.Game.savePuzzle();
@@ -202,29 +176,25 @@ S.Ads = {
       }
     } catch(e){}
 
-    // Полностью выключаем звук (не только suspend, но и gain = 0)
+    // 2. Полное выключение звука (мгновенное обнуление master.gain)
     try {
-      if (S.Audio && S.Audio.ready){
-        S.Audio._adMutedMusic = S.Audio.musicEnabled;
-        S.Audio._adMutedSfx = S.Audio.sfxEnabled;
-        S.Audio.suspend();
-        // Дополнительно приглушаем master — на случай, если
-        // AudioContext не переходит в suspended (iOS).
-        if (S.Audio.master){
-          S.Audio.master.gain.setTargetAtTime(0, S.Audio.ctx.currentTime, 0.02);
-        }
-      }
+      if (S.Audio && S.Audio.muteForAd) S.Audio.muteForAd();
     } catch(e){}
 
-    // Сообщаем VK, что геймплей остановлен
+    // 3. Сообщаем VK, что геймплей остановлен
     try { S.SDK.gameplayStop(); } catch(e){}
   },
 
-  /* Возвращает игру и звук из состояния паузы после рекламы. */
   _resumeAfterAd(){
     if (!this._suspended) return;
     this._suspended = false;
 
+    // 1. Возврат звука (master.gain восстанавливается)
+    try {
+      if (S.Audio && S.Audio.unmuteAfterAd) S.Audio.unmuteAfterAd();
+    } catch(e){}
+
+    // 2. Возврат игры
     try {
       if (S.Game && S.Game.state.mode === 'paused'
           && S.Game.state.previousMode === 'playing'){
@@ -232,17 +202,7 @@ S.Ads = {
       }
     } catch(e){}
 
-    try {
-      if (S.Audio && S.Audio.ready){
-        // Возвращаем master gain как было
-        if (S.Audio.master){
-          const target = S.Audio.musicEnabled ? 0.6 : 0;
-          S.Audio.master.gain.setTargetAtTime(target, S.Audio.ctx.currentTime, 0.05);
-        }
-        S.Audio.resume();
-      }
-    } catch(e){}
-
+    // 3. Сообщаем VK о возобновлении
     try { S.SDK.gameplayStart(); } catch(e){}
   },
 
@@ -265,16 +225,8 @@ S.Ads = {
     onClose && onClose(!!(res && res.result));
   },
 
-  /**
-   * Показывает rewarded-рекламу.
-   * onReward вызывается ТОЛЬКО если реклама реально просмотрена.
-   * onClose(wasShown, rewarded, reason):
-   *   wasShown — был ли вообще показан рекламный блок
-   *   rewarded — получена ли награда
-   *   reason   — 'ok' | 'closed_early' | 'unavailable' | 'error'
-   */
   async showRewarded(onReward, onClose){
-    // Dev-режим: имитируем успешный просмотр
+    // Dev-режим
     if (!S.SDK.ready && S.SDK.isDevMode()){
       console.log('[Ads] DEV: rewarded simulated');
       this._suspendForAd();
@@ -287,30 +239,24 @@ S.Ads = {
     }
 
     if (!S.SDK.ready){
-      console.log('[Ads] SDK not ready');
       onClose && onClose(false, false, 'unavailable');
       return;
     }
 
-    // Проверяем доступность rewarded-рекламы ДО паузы,
-    // чтобы не морозить игру, если реклама не покажется.
+    // Проверка доступности ДО паузы — если рекламы нет, не морозим игру
     const available = await this.isRewardedAvailable();
-    console.log('[Ads] Rewarded available:', available);
-
     if (!available){
       onClose && onClose(false, false, 'unavailable');
       return;
     }
 
-    // Ставим на паузу и глушим звук
+    // Пауза + мьют
     this._suspendForAd();
 
-    // Показываем рекламу — промис резолвится, когда её закрыли
     const res = await S.SDK._send('VKWebAppShowNativeAds', { ad_format: 'reward' });
-    console.log('[Ads] ShowNativeAds result:', res);
     this.lastShown = Date.now();
 
-    // Возвращаем игру и звук
+    // Возврат + анмьют
     this._resumeAfterAd();
 
     if (!res){
@@ -324,9 +270,6 @@ S.Ads = {
   }
 };
 
-/* ============================================================
-   Лидерборд VK
-   ============================================================ */
 S.Leaderboard = {
   async submit(score){
     if (!S.SDK.ready || !S.SDK.vk) return;
@@ -341,9 +284,7 @@ S.Leaderboard = {
       if (S.UI) S.UI.showToast(S.I18N.t('lbNoSDK'));
       return;
     }
-    const res = await S.SDK._send('VKWebAppShowLeaderBoardBox', {
-      user_result: score || 0
-    });
+    const res = await S.SDK._send('VKWebAppShowLeaderBoardBox', { user_result: score || 0 });
     if (!res && S.UI) S.UI.showToast(S.I18N.t('lbError'));
   }
 };

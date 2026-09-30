@@ -4,6 +4,11 @@ S.Audio = {
   ctx:null, master:null, wet:null, reverb:null, pad:null,
   ready:false, sfxEnabled:true, musicEnabled:true,
 
+  // Снимок состояния "до рекламы"
+  _wasMusic: null,
+  _wasSfx: null,
+  _muted: false,
+
   init(){
     if(this.ready) return;
     try{
@@ -36,11 +41,81 @@ S.Audio = {
 
   setMusic(on){
     this.musicEnabled = on;
-    if(this.ready){
+    if(this.ready && !this._muted){
       this.master.gain.setTargetAtTime(on ? 0.6 : 0, this.ctx.currentTime, 0.15);
     }
   },
   setSfx(on){ this.sfxEnabled = on; },
+
+  /* ============================================================
+     Жёсткое выключение звука на время рекламы.
+     Обнуляем master.gain МГНОВЕННО (setValueAtTime), потому что
+     setTargetAtTime — это плавный переход, а нативные рекламные
+     окна VK перекрывают WebView и он продолжает играть.
+     Также останавливаем pad-осцилляторы — на случай, если
+     на платформе AudioContext.suspend() игнорируется.
+     ============================================================ */
+  muteForAd(){
+    if (!this.ready || this._muted) return;
+    this._muted = true;
+    this._wasMusic = this.musicEnabled;
+    this._wasSfx   = this.sfxEnabled;
+    this.musicEnabled = false;
+    this.sfxEnabled   = false;
+
+    try {
+      const t = this.ctx.currentTime;
+      // 1. Мгновенно глушим общий выход
+      this.master.gain.cancelScheduledValues(t);
+      this.master.gain.setValueAtTime(0, t);
+
+      // 2. Глушим reverb-wet (на случай, если что-то просочилось)
+      if (this.wet){
+        this.wet.gain.cancelScheduledValues(t);
+        this.wet.gain.setValueAtTime(0, t);
+      }
+
+      // 3. Приостанавливаем контекст
+      if (this.ctx.state === 'running') this.ctx.suspend();
+
+      // 4. Останавливаем осцилляторы pad — крайняя мера
+      if (this.pad && this.pad.oscs){
+        this.pad.oscs.forEach(o => { try { o.stop(); } catch(e){} });
+        this.pad.oscs = [];
+      }
+      if (this.pad && this.pad.lfo){
+        try { this.pad.lfo.stop(); } catch(e){}
+        this.pad.lfo = null;
+      }
+    } catch(e){ console.warn('muteForAd failed', e); }
+  },
+
+  /* Возврат звука после рекламы. */
+  unmuteAfterAd(){
+    if (!this.ready || !this._muted) return;
+    this._muted = false;
+
+    this.musicEnabled = this._wasMusic !== null ? this._wasMusic : true;
+    this.sfxEnabled   = this._wasSfx   !== null ? this._wasSfx   : true;
+    this._wasMusic = null;
+    this._wasSfx = null;
+
+    try {
+      const t = this.ctx.currentTime;
+      // Возобновляем контекст
+      if (this.ctx.state === 'suspended') this.ctx.resume();
+
+      // Возвращаем громкость
+      const target = this.musicEnabled ? 0.6 : 0;
+      this.master.gain.cancelScheduledValues(t);
+      this.master.gain.setValueAtTime(target, t);
+
+      if (this.wet){
+        this.wet.gain.cancelScheduledValues(t);
+        this.wet.gain.setValueAtTime(this.musicEnabled ? 0.35 : 0, t);
+      }
+    } catch(e){ console.warn('unmuteAfterAd failed', e); }
+  },
 
   makeImpulse(dur, decay){
     const rate = this.ctx.sampleRate, len = Math.floor(rate*dur);
@@ -62,21 +137,26 @@ S.Audio = {
     const filter = this.ctx.createBiquadFilter();
     filter.type = 'lowpass'; filter.frequency.value = 800; filter.Q.value = 2;
     filter.connect(padGain);
+
+    const oscs = [];
     [65.41, 98.00, 130.81].forEach((f,i)=>{
       const osc = this.ctx.createOscillator();
       osc.type = i%2 === 0 ? 'sawtooth' : 'triangle';
       osc.frequency.value = f * (1 + (Math.random()-0.5)*0.003);
       const g = this.ctx.createGain(); g.gain.value = 0.3;
       osc.connect(g); g.connect(filter); osc.start();
+      oscs.push(osc);
     });
+
     const lfo = this.ctx.createOscillator(); lfo.frequency.value = 0.05;
     const lfoGain = this.ctx.createGain(); lfoGain.gain.value = 300;
     lfo.connect(lfoGain); lfoGain.connect(filter.frequency); lfo.start();
-    this.pad = { gain: padGain, filter };
+
+    this.pad = { gain: padGain, filter, oscs, lfo };
   },
 
   note(freq, dur=1.6, vol=0.28, type='sine'){
-    if(!this.ready || !this.sfxEnabled) return;
+    if(!this.ready || !this.sfxEnabled || this._muted) return;
     const t = this.ctx.currentTime;
     const osc = this.ctx.createOscillator();
     osc.type = type; osc.frequency.value = freq;
@@ -98,7 +178,7 @@ S.Audio = {
   },
 
   chord(freqs, spacing=0.09, dur=2.4){
-    if(!this.sfxEnabled) return;
+    if(!this.sfxEnabled || this._muted) return;
     freqs.forEach((f,i)=> setTimeout(()=> this.note(f, dur, 0.22), i*spacing*1000));
   }
 };
