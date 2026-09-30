@@ -1,23 +1,27 @@
 window.S = window.S || {};
 
 /* ============================================================
-   VK Bridge. Требование модерации: VKWebAppInit должен быть
-   отправлен в первые 30 секунд. Отправляем сразу при загрузке.
+   VK Bridge. VKWebAppInit вызывается РОВНО ОДИН РАЗ — внутри
+   S.SDK.init(). Это убирает Uncaught (in promise) от повторного
+   вызова метода.
    ============================================================ */
-(function(){
-  if (typeof vkBridge === 'undefined'){
-    console.warn('[VK] vk-bridge не загружен — dev-режим');
-    return;
+
+// Глобальная «глушилка» ожидаемых ошибок VK Bridge —
+// некоторые методы отдают error_type даже при нормальной работе.
+window.addEventListener('unhandledrejection', (e) => {
+  const r = e.reason;
+  if (r && (typeof r === 'object' || typeof r === 'string')){
+    const s = typeof r === 'string' ? r : JSON.stringify(r);
+    if (s.indexOf('already') !== -1 ||
+        s.indexOf('storage') !== -1 ||
+        s.indexOf('access') !== -1 ||
+        s.indexOf('UserDenied') !== -1 ||
+        s.indexOf('VKWebAppInit') !== -1){
+      e.preventDefault();
+      console.log('[VK] suppressed rejection:', s);
+    }
   }
-  vkBridge.send('VKWebAppInit')
-    .then(data => {
-      if (data && data.result){
-        console.log('[VK] VKWebAppInit OK');
-        S.VKReady = true;
-      }
-    })
-    .catch(err => console.warn('[VK] VKWebAppInit error', err));
-})();
+});
 
 S.SDK = {
   vk: null,
@@ -25,6 +29,7 @@ S.SDK = {
   isAuthorized: false,
   detectedLang: 'ru',
   ready: false,
+  _initSent: false,
 
   isDevMode(){
     try{
@@ -34,92 +39,94 @@ S.SDK = {
     }catch(e){ return true; }
   },
 
+  // Безопасная обёртка над vk.send: не даёт промису «утечь» наружу
+  async _send(method, params){
+    if (!this.vk) return null;
+    try{
+      return await this.vk.send(method, params);
+    }catch(e){
+      console.log('[VK] ' + method + ' rejected:', e);
+      return null;
+    }
+  },
+
   async init(){
     if (typeof vkBridge === 'undefined'){
-      console.warn('[VK] SDK недоступен');
+      console.warn('[VK] SDK недоступен — dev-режим');
       return;
     }
     this.vk = vkBridge;
 
-    try{
-      await this.vk.send('VKWebAppInit');
-    }catch(e){ /* уже мог быть отправлен */ }
+    // VKWebAppInit — ОДИН РАЗ. Никаких IIFE-дублей.
+    if (!this._initSent){
+      this._initSent = true;
+      const res = await this._send('VKWebAppInit');
+      if (res && res.result) console.log('[VK] VKWebAppInit OK');
+      else console.log('[VK] VKWebAppInit уже был отправлен ранее');
+    }
 
-    // Информация о пользователе — вежливая попытка, без падения
-    try{
-      const user = await this.vk.send('VKWebAppGetUserInfo');
-      this.user = user || null;
-      this.isAuthorized = !!(user && user.id);
-      if (user && user.language){
+    // Информация о пользователе — опционально
+    const user = await this._send('VKWebAppGetUserInfo');
+    if (user && user.id){
+      this.user = user;
+      this.isAuthorized = true;
+      if (user.language){
         this.detectedLang = user.language.startsWith('ru') ? 'ru' : 'en';
       }
-    }catch(e){
-      this.isAuthorized = false;
     }
 
     this.ready = true;
   },
 
-  // VK Bridge не требует отдельного события ready — VKWebAppInit достаточно
-  notifyReady(){ /* no-op */ },
+  notifyReady(){ /* VK не требует отдельного события */ },
 
-  gameplayStart(){ try { this.vk && this.vk.send('VKWebAppGameplayStart'); }catch(e){} },
-  gameplayStop(){  try { this.vk && this.vk.send('VKWebAppGameplayStop');  }catch(e){} },
+  gameplayStart(){ this._send('VKWebAppGameplayStart'); },
+  gameplayStop(){  this._send('VKWebAppGameplayStop');  },
 
   /* ---------- Cloud storage (VK Storage) ---------- */
   async loadCloud(){
     if (!this.vk || !this.ready) return null;
-    try{
-      const keys = [
-        'level','best','tutorialDone','achievements','hints',
-        'ratingPoints','ratingPerfect','ratingLevels'
-      ];
-      const res = await this.vk.send('VKWebAppStorageGet', { keys });
-      const out = {};
-      (res && res.keys || []).forEach(item => {
-        if (!item || !item.key) return;
-        if (item.value === '' || item.value === undefined) return;
-        try { out[item.key] = JSON.parse(item.value); }
-        catch(e){ out[item.key] = item.value; }
-      });
-      return out;
-    }catch(e){
-      console.warn('[VK] StorageGet failed', e);
-      return null;
-    }
+
+    const keys = [
+      'level','best','tutorialDone','achievements','hints',
+      'ratingPoints','ratingPerfect','ratingLevels'
+    ];
+    const res = await this._send('VKWebAppStorageGet', { keys });
+    if (!res || !res.keys) return null;
+
+    const out = {};
+    res.keys.forEach(item => {
+      if (!item || !item.key) return;
+      if (item.value === '' || item.value === undefined) return;
+      try { out[item.key] = JSON.parse(item.value); }
+      catch(e){ out[item.key] = item.value; }
+    });
+    return out;
   },
 
   async saveCloud(data){
     if (!this.vk || !this.ready) return;
-    try{
-      const keys = Object.keys(data).map(key => ({
-        key,
-        value: JSON.stringify(data[key])
-      }));
-      if (!keys.length) return;
-      await this.vk.send('VKWebAppStorageSet', { keys });
-    }catch(e){
-      console.warn('[VK] StorageSet failed', e);
-    }
+    const keys = Object.keys(data).map(key => ({
+      key,
+      value: JSON.stringify(data[key])
+    }));
+    if (!keys.length) return;
+    await this._send('VKWebAppStorageSet', { keys });
   },
 
   /* ---------- Favorites / Support ---------- */
   async addToFavorites(){
-    if (!this.vk) return false;
-    try{
-      const res = await this.vk.send('VKWebAppAddToFavorites');
-      return !!(res && res.result);
-    }catch(e){ return false; }
+    const res = await this._send('VKWebAppAddToFavorites');
+    return !!(res && res.result);
   },
 
-  openSupport(){
-    if (!this.vk) return;
-    try { this.vk.send('VKWebAppOpenSupport'); }catch(e){}
+  async openSupport(){
+    await this._send('VKWebAppOpenSupport');
   }
 };
 
 /* ============================================================
-   Реклама через VK Bridge
+   Реклама
    ============================================================ */
 S.Ads = {
   lastShown: 0,
@@ -128,24 +135,17 @@ S.Ads = {
     return S.SDK.ready && (Date.now() - this.lastShown) > S.CONFIG.AD_COOLDOWN_MS;
   },
 
-  showFullscreen(onClose){
+  async showFullscreen(onClose){
     if (!S.SDK.ready){ onClose && onClose(false); return; }
     if (!this.canShow()){ onClose && onClose(false); return; }
 
-    try{
-      S.SDK.vk.send('VKWebAppShowNativeAds', { ad_format: 'interstitial' })
-        .then(data => {
-          this.lastShown = Date.now();
-          onClose && onClose(!!(data && data.result));
-        })
-        .catch(() => onClose && onClose(false));
-    }catch(e){
-      onClose && onClose(false);
-    }
+    const res = await S.SDK._send('VKWebAppShowNativeAds', { ad_format: 'interstitial' });
+    this.lastShown = Date.now();
+    onClose && onClose(!!(res && res.result));
   },
 
-  showRewarded(onReward, onClose){
-    // В dev-режиме имитируем успешный просмотр
+  async showRewarded(onReward, onClose){
+    // Dev-режим: имитируем успешный просмотр
     if (!S.SDK.ready && S.SDK.isDevMode()){
       console.log('[DEV] Rewarded simulated');
       setTimeout(() => {
@@ -159,36 +159,23 @@ S.Ads = {
       return;
     }
 
-    let rewarded = false;
-    try{
-      S.SDK.vk.send('VKWebAppShowNativeAds', { ad_format: 'reward' })
-        .then(data => {
-          if (data && data.result){
-            rewarded = true;
-            onReward && onReward();
-          }
-          onClose && onClose(true, rewarded);
-        })
-        .catch(() => onClose && onClose(false, false));
-    }catch(e){
-      onClose && onClose(false, false);
-    }
+    const res = await S.SDK._send('VKWebAppShowNativeAds', { ad_format: 'reward' });
+    const rewarded = !!(res && res.result);
+    if (rewarded && onReward) onReward();
+    onClose && onClose(true, rewarded);
   }
 };
 
 /* ============================================================
-   Лидерборд VK. Отправляем результат через VKWebAppSetLeaderboardScore,
-   а для показа используем нативное окно VKWebAppShowLeaderBoardBox.
+   Лидерборд VK
    ============================================================ */
 S.Leaderboard = {
   async submit(score){
     if (!S.SDK.ready || !S.SDK.vk) return;
-    try{
-      await S.SDK.vk.send('VKWebAppSetLeaderboardScore', {
-        leaderboard_id: S.CONFIG.LEADERBOARD_ID,
-        score: score
-      });
-    }catch(e){ console.warn('[VK] Leaderboard submit failed', e); }
+    await S.SDK._send('VKWebAppSetLeaderboardScore', {
+      leaderboard_id: S.CONFIG.LEADERBOARD_ID,
+      score: score
+    });
   },
 
   async openNative(score){
@@ -196,13 +183,9 @@ S.Leaderboard = {
       if (S.UI) S.UI.showToast(S.I18N.t('lbNoSDK'));
       return;
     }
-    try{
-      await S.SDK.vk.send('VKWebAppShowLeaderBoardBox', {
-        user_result: score || 0
-      });
-    }catch(e){
-      console.warn('[VK] ShowLeaderBoardBox failed', e);
-      if (S.UI) S.UI.showToast(S.I18N.t('lbError'));
-    }
+    const res = await S.SDK._send('VKWebAppShowLeaderBoardBox', {
+      user_result: score || 0
+    });
+    if (!res && S.UI) S.UI.showToast(S.I18N.t('lbError'));
   }
 };
