@@ -5,9 +5,7 @@ window.S = window.S || {};
    S.SDK.init(). Никаких IIFE-дублей.
    ============================================================ */
 
-/* Глушилка unhandledrejection от внутренних модулей VK Bridge.
-   VK Bridge (promisifySend.ts / bridge.ts) иногда реджектит промисы
-   с объектом без ключей (#<Object>). Фильтруем по stack-trace. */
+/* Глушилка unhandledrejection от внутренних модулей VK Bridge. */
 window.addEventListener('unhandledrejection', (e) => {
   const r = e.reason || {};
   const stack = (r && r.stack) || '';
@@ -56,7 +54,6 @@ S.SDK = {
     }catch(e){ return true; }
   },
 
-  /* Безопасный вызов. Никогда не отдаёт reject наружу. */
   _send(method, params){
     if (!this.vk) return Promise.resolve(null);
     return new Promise((resolve) => {
@@ -74,8 +71,6 @@ S.SDK = {
     });
   },
 
-  /* Тихой вызов — не логирует reject. Для GameplayStart/Stop,
-     которые на десктопе всегда возвращают client_error. */
   _sendQuiet(method, params){
     if (!this.vk) return Promise.resolve(null);
     return new Promise((resolve) => {
@@ -101,7 +96,6 @@ S.SDK = {
       else console.log('[VK] VKWebAppInit уже был отправлен ранее');
     }
 
-    // VKWebAppGetUserInfo может падать с "access denied" — это нормально
     const user = await this._send('VKWebAppGetUserInfo');
     if (user && user.id){
       this.user = user;
@@ -116,9 +110,6 @@ S.SDK = {
 
   notifyReady(){ /* VK не требует отдельного события */ },
 
-  /* GameplayStart/Stop — вызываем только если готовы и не дублируем.
-     На десктопе они возвращают client_error — это нормально,
-     поэтому используем _sendQuiet, чтобы не спамить в консоль. */
   gameplayStart(){
     if (!this.ready || this._gameplayActive) return;
     this._gameplayActive = true;
@@ -181,13 +172,78 @@ S.SDK = {
 };
 
 /* ============================================================
-   Реклама
+   Пауза игры и звука на время рекламы.
+   VK Bridge не даёт onOpen/onClose для ShowNativeAds — промис
+   резолвится только когда реклама закрыта. Поэтому:
+   1) ставим игру на паузу и глушим звук ПЕРЕД показом;
+   2) ждём промис;
+   3) возвращаем всё как было ПОСЛЕ закрытия.
    ============================================================ */
 S.Ads = {
   lastShown: 0,
+  _suspended: false,
 
   canShow(){
     return S.SDK.ready && (Date.now() - this.lastShown) > S.CONFIG.AD_COOLDOWN_MS;
+  },
+
+  /* Ставит игру на паузу, глушит музыку и сообщает VK, что
+     геймплей остановлен. Не показывает экран паузы. */
+  _suspendForAd(){
+    if (this._suspended) return;
+    this._suspended = true;
+
+    // Пауза игрового процесса без открытия экрана "Пауза"
+    try {
+      if (S.Game && S.Game.state.mode === 'playing'){
+        S.Game.savePuzzle();
+        S.Game.state.previousMode = 'playing';
+        S.Game.state.mode = 'paused';
+      }
+    } catch(e){}
+
+    // Полностью выключаем звук (не только suspend, но и gain = 0)
+    try {
+      if (S.Audio && S.Audio.ready){
+        S.Audio._adMutedMusic = S.Audio.musicEnabled;
+        S.Audio._adMutedSfx = S.Audio.sfxEnabled;
+        S.Audio.suspend();
+        // Дополнительно приглушаем master — на случай, если
+        // AudioContext не переходит в suspended (iOS).
+        if (S.Audio.master){
+          S.Audio.master.gain.setTargetAtTime(0, S.Audio.ctx.currentTime, 0.02);
+        }
+      }
+    } catch(e){}
+
+    // Сообщаем VK, что геймплей остановлен
+    try { S.SDK.gameplayStop(); } catch(e){}
+  },
+
+  /* Возвращает игру и звук из состояния паузы после рекламы. */
+  _resumeAfterAd(){
+    if (!this._suspended) return;
+    this._suspended = false;
+
+    try {
+      if (S.Game && S.Game.state.mode === 'paused'
+          && S.Game.state.previousMode === 'playing'){
+        S.Game.state.mode = 'playing';
+      }
+    } catch(e){}
+
+    try {
+      if (S.Audio && S.Audio.ready){
+        // Возвращаем master gain как было
+        if (S.Audio.master){
+          const target = S.Audio.musicEnabled ? 0.6 : 0;
+          S.Audio.master.gain.setTargetAtTime(target, S.Audio.ctx.currentTime, 0.05);
+        }
+        S.Audio.resume();
+      }
+    } catch(e){}
+
+    try { S.SDK.gameplayStart(); } catch(e){}
   },
 
   async isRewardedAvailable(){
@@ -201,8 +257,11 @@ S.Ads = {
     if (!S.SDK.ready){ onClose && onClose(false); return; }
     if (!this.canShow()){ onClose && onClose(false); return; }
 
+    this._suspendForAd();
     const res = await S.SDK._send('VKWebAppShowNativeAds', { ad_format: 'interstitial' });
     this.lastShown = Date.now();
+    this._resumeAfterAd();
+
     onClose && onClose(!!(res && res.result));
   },
 
@@ -218,10 +277,12 @@ S.Ads = {
     // Dev-режим: имитируем успешный просмотр
     if (!S.SDK.ready && S.SDK.isDevMode()){
       console.log('[Ads] DEV: rewarded simulated');
+      this._suspendForAd();
       setTimeout(() => {
+        this._resumeAfterAd();
         onReward && onReward();
         onClose && onClose(true, true, 'ok');
-      }, 200);
+      }, 400);
       return;
     }
 
@@ -231,7 +292,8 @@ S.Ads = {
       return;
     }
 
-    // Проверяем доступность именно rewarded-рекламы
+    // Проверяем доступность rewarded-рекламы ДО паузы,
+    // чтобы не морозить игру, если реклама не покажется.
     const available = await this.isRewardedAvailable();
     console.log('[Ads] Rewarded available:', available);
 
@@ -240,12 +302,17 @@ S.Ads = {
       return;
     }
 
-    // Показываем рекламу
+    // Ставим на паузу и глушим звук
+    this._suspendForAd();
+
+    // Показываем рекламу — промис резолвится, когда её закрыли
     const res = await S.SDK._send('VKWebAppShowNativeAds', { ad_format: 'reward' });
     console.log('[Ads] ShowNativeAds result:', res);
     this.lastShown = Date.now();
 
-    // _send вернул null — клиентская ошибка или таймаут
+    // Возвращаем игру и звук
+    this._resumeAfterAd();
+
     if (!res){
       onClose && onClose(false, false, 'error');
       return;
