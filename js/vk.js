@@ -5,14 +5,9 @@ window.S = window.S || {};
    S.SDK.init(). Никаких IIFE-дублей.
    ============================================================ */
 
-/* ----------------------------------------------------------------
-   Глушилка unhandledrejection.
-   VK Bridge внутри себя (promisifySend.ts / bridge.ts) иногда
-   резолвит/реджектит промисы с объектом без ключей (#<Object>),
-   который не поддаётся фильтрации по содержимому. Поэтому
-   смотрим на stack-trace: если ошибка пришла из внутренних
-   модулей VK Bridge — глушим.
-   ---------------------------------------------------------------- */
+/* Глушилка unhandledrejection от внутренних модулей VK Bridge.
+   VK Bridge (promisifySend.ts / bridge.ts) иногда реджектит промисы
+   с объектом без ключей (#<Object>). Фильтруем по stack-trace. */
 window.addEventListener('unhandledrejection', (e) => {
   const r = e.reason || {};
   const stack = (r && r.stack) || '';
@@ -36,7 +31,7 @@ window.addEventListener('unhandledrejection', (e) => {
     msg.indexOf('access') !== -1 ||
     msg.indexOf('UserDenied') !== -1 ||
     msg.indexOf('no_ad') !== -1 ||
-    msg.indexOf('ad_') !== -1;
+    msg.indexOf('client_error') !== -1;
 
   if (isVkInternal || looksVk){
     e.preventDefault();
@@ -51,6 +46,7 @@ S.SDK = {
   detectedLang: 'ru',
   ready: false,
   _initSent: false,
+  _gameplayActive: false,
 
   isDevMode(){
     try{
@@ -75,6 +71,19 @@ S.SDK = {
         console.log('[VK] ' + method + ' threw:', e);
         resolve(null);
       }
+    });
+  },
+
+  /* Тихой вызов — не логирует reject. Для GameplayStart/Stop,
+     которые на десктопе всегда возвращают client_error. */
+  _sendQuiet(method, params){
+    if (!this.vk) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      try{
+        this.vk.send(method, params)
+          .then(res => resolve(res || null))
+          .catch(() => resolve(null));
+      }catch(e){ resolve(null); }
     });
   },
 
@@ -107,8 +116,19 @@ S.SDK = {
 
   notifyReady(){ /* VK не требует отдельного события */ },
 
-  gameplayStart(){ this._send('VKWebAppGameplayStart'); },
-  gameplayStop(){  this._send('VKWebAppGameplayStop');  },
+  /* GameplayStart/Stop — вызываем только если готовы и не дублируем.
+     На десктопе они возвращают client_error — это нормально,
+     поэтому используем _sendQuiet, чтобы не спамить в консоль. */
+  gameplayStart(){
+    if (!this.ready || this._gameplayActive) return;
+    this._gameplayActive = true;
+    this._sendQuiet('VKWebAppGameplayStart');
+  },
+  gameplayStop(){
+    if (!this.ready || !this._gameplayActive) return;
+    this._gameplayActive = false;
+    this._sendQuiet('VKWebAppGameplayStop');
+  },
 
   /* ---------- Cloud storage ---------- */
   async loadCloud(){
@@ -186,35 +206,54 @@ S.Ads = {
     onClose && onClose(!!(res && res.result));
   },
 
+  /**
+   * Показывает rewarded-рекламу.
+   * onReward вызывается ТОЛЬКО если реклама реально просмотрена.
+   * onClose(wasShown, rewarded, reason):
+   *   wasShown — был ли вообще показан рекламный блок
+   *   rewarded — получена ли награда
+   *   reason   — 'ok' | 'closed_early' | 'unavailable' | 'error'
+   */
   async showRewarded(onReward, onClose){
     // Dev-режим: имитируем успешный просмотр
     if (!S.SDK.ready && S.SDK.isDevMode()){
-      console.log('[DEV] Rewarded simulated');
+      console.log('[Ads] DEV: rewarded simulated');
       setTimeout(() => {
         onReward && onReward();
-        onClose && onClose(true, true);
+        onClose && onClose(true, true, 'ok');
       }, 200);
       return;
     }
 
     if (!S.SDK.ready){
-      onClose && onClose(false, false);
+      console.log('[Ads] SDK not ready');
+      onClose && onClose(false, false, 'unavailable');
       return;
     }
 
+    // Проверяем доступность именно rewarded-рекламы
     const available = await this.isRewardedAvailable();
+    console.log('[Ads] Rewarded available:', available);
+
     if (!available){
-      console.log('[VK] Rewarded ad not available');
-      onClose && onClose(false, false);
+      onClose && onClose(false, false, 'unavailable');
       return;
     }
 
+    // Показываем рекламу
     const res = await S.SDK._send('VKWebAppShowNativeAds', { ad_format: 'reward' });
+    console.log('[Ads] ShowNativeAds result:', res);
     this.lastShown = Date.now();
+
+    // _send вернул null — клиентская ошибка или таймаут
+    if (!res){
+      onClose && onClose(false, false, 'error');
+      return;
+    }
 
     const rewarded = !!(res && res.result === true);
     if (rewarded && onReward) onReward();
-    onClose && onClose(true, rewarded);
+    onClose && onClose(true, rewarded, rewarded ? 'ok' : 'closed_early');
   }
 };
 

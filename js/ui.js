@@ -296,11 +296,8 @@ S.UI = {
     else    this.showToast(S.I18N.t('favoritesFailed'));
   },
 
-  /* ---------- SUPPORT ----------
-     Поддержка реализована через VKWebAppJoinGroup: пользователь
-     вступает в сообщество vk.com/veldgame. Если метод недоступен
-     или ID группы не задан — открываем ссылку на сообщество.
-  -------------------------------- */
+  /* Поддержка: вступление в сообщество vk.com/veldgame.
+     Если ID группы не задан — открываем ссылку. */
   async onSupport(){
     if (!S.SDK.ready){
       this.showToast(S.I18N.t('supportUnavailable'));
@@ -315,7 +312,6 @@ S.UI = {
       return;
     }
 
-    // Резервный вариант: открыть ссылку на сообщество
     const url = S.CONFIG.VK_COMMUNITY_URL;
     if (url){
       this.showToast(S.I18N.t('supportOpened'));
@@ -712,8 +708,13 @@ S.UI = {
 
     S.Ads.showRewarded(
       ()=>{ activate(); },
-      (wasShown, rewarded) => {
-        if (wasShown && !rewarded) {
+      (wasShown, rewarded, reason) => {
+        if (!wasShown){
+          // Реклама не была показана
+          if (reason === 'unavailable') this.showToast(S.I18N.t('hintAdUnavailable'));
+          else                          this.showToast(S.I18N.t('hintAdError'));
+        } else if (wasShown && !rewarded){
+          // Реклама показана, но закрыта досрочно
           this.showToast(S.I18N.t('hintAdNotFinished'));
         }
       }
