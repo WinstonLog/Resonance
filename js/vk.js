@@ -2,23 +2,45 @@ window.S = window.S || {};
 
 /* ============================================================
    VK Bridge. VKWebAppInit вызывается РОВНО ОДИН РАЗ — внутри
-   S.SDK.init(). Это убирает Uncaught (in promise) от повторного
-   вызова метода.
+   S.SDK.init(). Никаких IIFE-дублей.
    ============================================================ */
 
-// Глушилка ожидаемых reject'ов VK Bridge (already sent, storage empty и т.п.)
+/* ----------------------------------------------------------------
+   Глушилка unhandledrejection.
+   VK Bridge внутри себя (promisifySend.ts / bridge.ts) иногда
+   резолвит/реджектит промисы с объектом без ключей (#<Object>),
+   который не поддаётся фильтрации по содержимому. Поэтому
+   смотрим на stack-trace: если ошибка пришла из внутренних
+   модулей VK Bridge — глушим.
+   ---------------------------------------------------------------- */
 window.addEventListener('unhandledrejection', (e) => {
-  const r = e.reason;
-  if (r && (typeof r === 'object' || typeof r === 'string')){
-    const s = typeof r === 'string' ? r : JSON.stringify(r);
-    if (s.indexOf('already') !== -1 ||
-        s.indexOf('storage') !== -1 ||
-        s.indexOf('access') !== -1 ||
-        s.indexOf('UserDenied') !== -1 ||
-        s.indexOf('VKWebAppInit') !== -1){
-      e.preventDefault();
-      console.log('[VK] suppressed rejection:', s);
-    }
+  const r = e.reason || {};
+  const stack = (r && r.stack) || '';
+  let msg = '';
+  try {
+    msg = typeof r === 'string'
+      ? r
+      : (r && (r.message || r.error_msg)) || String(r);
+  } catch(_) { msg = ''; }
+
+  const isVkInternal =
+    stack.indexOf('bridge.ts') !== -1 ||
+    stack.indexOf('promisifySend') !== -1 ||
+    stack.indexOf('vk-bridge') !== -1 ||
+    stack.indexOf('handleEvent') !== -1;
+
+  const looksVk =
+    msg.indexOf('VKWebApp') !== -1 ||
+    msg.indexOf('already') !== -1 ||
+    msg.indexOf('storage') !== -1 ||
+    msg.indexOf('access') !== -1 ||
+    msg.indexOf('UserDenied') !== -1 ||
+    msg.indexOf('no_ad') !== -1 ||
+    msg.indexOf('ad_') !== -1;
+
+  if (isVkInternal || looksVk){
+    e.preventDefault();
+    console.log('[VK] suppressed rejection (internal)');
   }
 });
 
@@ -38,14 +60,22 @@ S.SDK = {
     }catch(e){ return true; }
   },
 
-  async _send(method, params){
-    if (!this.vk) return null;
-    try{
-      return await this.vk.send(method, params);
-    }catch(e){
-      console.log('[VK] ' + method + ' rejected:', e);
-      return null;
-    }
+  /* Безопасный вызов. Никогда не отдаёт reject наружу. */
+  _send(method, params){
+    if (!this.vk) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      try{
+        this.vk.send(method, params)
+          .then(res => resolve(res || null))
+          .catch(err => {
+            console.log('[VK] ' + method + ' rejected:', err);
+            resolve(null);
+          });
+      }catch(e){
+        console.log('[VK] ' + method + ' threw:', e);
+        resolve(null);
+      }
+    });
   },
 
   async init(){
@@ -55,7 +85,6 @@ S.SDK = {
     }
     this.vk = vkBridge;
 
-    // VKWebAppInit — ОДИН РАЗ. Никаких IIFE-дублей.
     if (!this._initSent){
       this._initSent = true;
       const res = await this._send('VKWebAppInit');
@@ -63,7 +92,7 @@ S.SDK = {
       else console.log('[VK] VKWebAppInit уже был отправлен ранее');
     }
 
-    // Информация о пользователе — опционально
+    // VKWebAppGetUserInfo может падать с "access denied" — это нормально
     const user = await this._send('VKWebAppGetUserInfo');
     if (user && user.id){
       this.user = user;
@@ -81,7 +110,7 @@ S.SDK = {
   gameplayStart(){ this._send('VKWebAppGameplayStart'); },
   gameplayStop(){  this._send('VKWebAppGameplayStop');  },
 
-  /* ---------- Cloud storage (VK Storage) ---------- */
+  /* ---------- Cloud storage ---------- */
   async loadCloud(){
     if (!this.vk || !this.ready) return null;
 
@@ -118,21 +147,13 @@ S.SDK = {
     return !!(res && res.result);
   },
 
-  /* ---------- Community (Support) ----------
-     Вместо несуществующего VKWebAppOpenSupport используем
-     VKWebAppJoinGroup — стандартный способ поддержки через
-     сообщество. ID сообщества берётся из S.CONFIG.VK_GROUP_ID.
-     Например, для vk.com/veldgame нужно подставить числовой ID
-     сообщества, который виден в настройках группы.
-  -------------------------------------------- */
+  /* ---------- Community (Support) ---------- */
   async joinCommunity(groupId){
     if (!groupId) return false;
     const res = await this._send('VKWebAppJoinGroup', { group_id: groupId });
     return !!(res && res.result);
   },
 
-  /* Резервный вариант: открыть ссылку на сообщество.
-     Используем, только если JoinGroup почему-то недоступен. */
   async openCommunityUrl(url){
     const res = await this._send('VKWebAppOpenURL', { url: url });
     return !!(res && res.result);
@@ -149,11 +170,6 @@ S.Ads = {
     return S.SDK.ready && (Date.now() - this.lastShown) > S.CONFIG.AD_COOLDOWN_MS;
   },
 
-  /**
-   * Проверяет, доступна ли rewarded-реклама на текущей платформе.
-   * Если VK не может показать rewarded — не показываем ничего и
-   * не даём награду.
-   */
   async isRewardedAvailable(){
     if (!S.SDK.ready) return false;
     const res = await S.SDK._send('VKWebAppCheckNativeAds', { ad_format: 'reward' });
@@ -170,12 +186,6 @@ S.Ads = {
     onClose && onClose(!!(res && res.result));
   },
 
-  /**
-   * Показывает rewarded-рекламу.
-   * onReward вызывается ТОЛЬКО если реклама реально просмотрена
-   * (VK вернул result: true). Если пользователь закрыл досрочно —
-   * onReward не сработает, onClose получит rewarded = false.
-   */
   async showRewarded(onReward, onClose){
     // Dev-режим: имитируем успешный просмотр
     if (!S.SDK.ready && S.SDK.isDevMode()){
@@ -192,7 +202,6 @@ S.Ads = {
       return;
     }
 
-    // Проверяем доступность именно rewarded-рекламы
     const available = await this.isRewardedAvailable();
     if (!available){
       console.log('[VK] Rewarded ad not available');
