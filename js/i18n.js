@@ -28,6 +28,11 @@ window.S = window.S || {};
       favoritesAlready: 'Уже в избранном',
       favoritesFailed: 'Не удалось добавить',
 
+      supportJoined: 'Спасибо за подписку!',
+      supportDeclined: 'Вы можете подписаться позже',
+      supportUnavailable: 'Подписка доступна только в VK',
+      supportOpened: 'Открываем сообщество…',
+
       level: 'УРОВЕНЬ',
       moves: 'ХОДОВ',
 
@@ -60,6 +65,7 @@ window.S = window.S || {};
       hintAdReady: 'Реклама доступна',
       hintAdCooldown: 'Реклама будет доступна через',
       hintAdUnavailable: 'Реклама временно недоступна',
+      hintAdNotFinished: 'Досмотрите видео до конца, чтобы получить подсказку',
       cancel: 'Отмена',
       confirm: 'Смотреть',
 
@@ -141,6 +147,11 @@ window.S = window.S || {};
       favoritesAlready: 'Already in favorites',
       favoritesFailed: 'Could not add',
 
+      supportJoined: 'Thanks for joining!',
+      supportDeclined: 'You can join later',
+      supportUnavailable: 'Joining is available in VK only',
+      supportOpened: 'Opening community…',
+
       level: 'LEVEL',
       moves: 'MOVES',
 
@@ -173,6 +184,7 @@ window.S = window.S || {};
       hintAdReady: 'Ad is available',
       hintAdCooldown: 'Ad will be available in',
       hintAdUnavailable: 'Ad is temporarily unavailable',
+      hintAdNotFinished: 'Watch the video to the end to get the hint',
       cancel: 'Cancel',
       confirm: 'Watch',
 

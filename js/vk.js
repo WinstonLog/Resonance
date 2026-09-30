@@ -6,8 +6,7 @@ window.S = window.S || {};
    вызова метода.
    ============================================================ */
 
-// Глобальная «глушилка» ожидаемых ошибок VK Bridge —
-// некоторые методы отдают error_type даже при нормальной работе.
+// Глушилка ожидаемых reject'ов VK Bridge (already sent, storage empty и т.п.)
 window.addEventListener('unhandledrejection', (e) => {
   const r = e.reason;
   if (r && (typeof r === 'object' || typeof r === 'string')){
@@ -39,7 +38,6 @@ S.SDK = {
     }catch(e){ return true; }
   },
 
-  // Безопасная обёртка над vk.send: не даёт промису «утечь» наружу
   async _send(method, params){
     if (!this.vk) return null;
     try{
@@ -114,14 +112,30 @@ S.SDK = {
     await this._send('VKWebAppStorageSet', { keys });
   },
 
-  /* ---------- Favorites / Support ---------- */
+  /* ---------- Favorites ---------- */
   async addToFavorites(){
     const res = await this._send('VKWebAppAddToFavorites');
     return !!(res && res.result);
   },
 
-  async openSupport(){
-    await this._send('VKWebAppOpenSupport');
+  /* ---------- Community (Support) ----------
+     Вместо несуществующего VKWebAppOpenSupport используем
+     VKWebAppJoinGroup — стандартный способ поддержки через
+     сообщество. ID сообщества берётся из S.CONFIG.VK_GROUP_ID.
+     Например, для vk.com/veldgame нужно подставить числовой ID
+     сообщества, который виден в настройках группы.
+  -------------------------------------------- */
+  async joinCommunity(groupId){
+    if (!groupId) return false;
+    const res = await this._send('VKWebAppJoinGroup', { group_id: groupId });
+    return !!(res && res.result);
+  },
+
+  /* Резервный вариант: открыть ссылку на сообщество.
+     Используем, только если JoinGroup почему-то недоступен. */
+  async openCommunityUrl(url){
+    const res = await this._send('VKWebAppOpenURL', { url: url });
+    return !!(res && res.result);
   }
 };
 
@@ -135,6 +149,18 @@ S.Ads = {
     return S.SDK.ready && (Date.now() - this.lastShown) > S.CONFIG.AD_COOLDOWN_MS;
   },
 
+  /**
+   * Проверяет, доступна ли rewarded-реклама на текущей платформе.
+   * Если VK не может показать rewarded — не показываем ничего и
+   * не даём награду.
+   */
+  async isRewardedAvailable(){
+    if (!S.SDK.ready) return false;
+    const res = await S.SDK._send('VKWebAppCheckNativeAds', { ad_format: 'reward' });
+    if (!res) return false;
+    return !!res.result;
+  },
+
   async showFullscreen(onClose){
     if (!S.SDK.ready){ onClose && onClose(false); return; }
     if (!this.canShow()){ onClose && onClose(false); return; }
@@ -144,6 +170,12 @@ S.Ads = {
     onClose && onClose(!!(res && res.result));
   },
 
+  /**
+   * Показывает rewarded-рекламу.
+   * onReward вызывается ТОЛЬКО если реклама реально просмотрена
+   * (VK вернул result: true). Если пользователь закрыл досрочно —
+   * onReward не сработает, onClose получит rewarded = false.
+   */
   async showRewarded(onReward, onClose){
     // Dev-режим: имитируем успешный просмотр
     if (!S.SDK.ready && S.SDK.isDevMode()){
@@ -154,13 +186,24 @@ S.Ads = {
       }, 200);
       return;
     }
+
     if (!S.SDK.ready){
       onClose && onClose(false, false);
       return;
     }
 
+    // Проверяем доступность именно rewarded-рекламы
+    const available = await this.isRewardedAvailable();
+    if (!available){
+      console.log('[VK] Rewarded ad not available');
+      onClose && onClose(false, false);
+      return;
+    }
+
     const res = await S.SDK._send('VKWebAppShowNativeAds', { ad_format: 'reward' });
-    const rewarded = !!(res && res.result);
+    this.lastShown = Date.now();
+
+    const rewarded = !!(res && res.result === true);
     if (rewarded && onReward) onReward();
     onClose && onClose(true, rewarded);
   }

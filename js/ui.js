@@ -239,9 +239,7 @@ S.UI = {
     if($('btnLeaderboard')) $('btnLeaderboard').addEventListener('click', ()=> this.openLeaderboard());
 
     if($('btnFavorites')) $('btnFavorites').addEventListener('click', ()=> this.onAddToFavorites());
-    if($('btnSupport'))   $('btnSupport').addEventListener('click', ()=> {
-      if (S.SDK && S.SDK.openSupport) S.SDK.openSupport();
-    });
+    if($('btnSupport'))   $('btnSupport').addEventListener('click', ()=> this.onSupport());
     if($('btnLbOpen'))    $('btnLbOpen').addEventListener('click', ()=> {
       S.Leaderboard.openNative(S.Rating ? S.Rating.totalPoints : 0);
     });
@@ -296,6 +294,35 @@ S.UI = {
     const ok = await S.SDK.addToFavorites();
     if (ok) this.showToast(S.I18N.t('favoritesAdded'));
     else    this.showToast(S.I18N.t('favoritesFailed'));
+  },
+
+  /* ---------- SUPPORT ----------
+     Поддержка реализована через VKWebAppJoinGroup: пользователь
+     вступает в сообщество vk.com/veldgame. Если метод недоступен
+     или ID группы не задан — открываем ссылку на сообщество.
+  -------------------------------- */
+  async onSupport(){
+    if (!S.SDK.ready){
+      this.showToast(S.I18N.t('supportUnavailable'));
+      return;
+    }
+
+    const groupId = S.CONFIG.VK_GROUP_ID;
+    if (groupId && groupId > 0){
+      const ok = await S.SDK.joinCommunity(groupId);
+      if (ok) this.showToast(S.I18N.t('supportJoined'));
+      else    this.showToast(S.I18N.t('supportDeclined'));
+      return;
+    }
+
+    // Резервный вариант: открыть ссылку на сообщество
+    const url = S.CONFIG.VK_COMMUNITY_URL;
+    if (url){
+      this.showToast(S.I18N.t('supportOpened'));
+      await S.SDK.openCommunityUrl(url);
+    } else {
+      this.showToast(S.I18N.t('supportUnavailable'));
+    }
   },
 
   /* ---------- PLAY ---------- */
@@ -685,7 +712,11 @@ S.UI = {
 
     S.Ads.showRewarded(
       ()=>{ activate(); },
-      ()=>{ /* onClose */ }
+      (wasShown, rewarded) => {
+        if (wasShown && !rewarded) {
+          this.showToast(S.I18N.t('hintAdNotFinished'));
+        }
+      }
     );
   }
 };

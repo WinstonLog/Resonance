@@ -12,8 +12,15 @@ S.CONFIG = {
   TRANSPOSE: [1.000, 1.122, 1.260, 1.498, 1.682],
 
   // ID лидерборда, созданного в настройках приложения VK.
-  // В VK leaderboards идентифицируются числами.
   LEADERBOARD_ID: 1,
+
+  // ID сообщества поддержки. Замените на реальный числовой ID
+  // сообщества vk.com/veldgame (виден в настройках группы VK).
+  VK_GROUP_ID: 224593349,
+
+  // Ссылка на сообщество — используется как резервный вариант,
+  // если VKWebAppJoinGroup недоступен.
+  VK_COMMUNITY_URL: 'https://vk.com/veldgame',
 
   STORAGE_KEY: 'sozvuchie_v1',
   AD_COOLDOWN_MS: 120_000,
