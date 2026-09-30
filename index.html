@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#05060f">
+<title>Созвучие / Resonance</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div id="app">
+  <canvas id="game"></canvas>
+
+  <!-- HUD -->
+  <div id="hud" class="hidden">
+    <button id="btnPause" class="icon-btn" aria-label="pause">
+      <svg viewBox="0 0 24 24" width="22" height="22">
+        <rect x="7" y="6" width="3.5" height="12" rx="1" fill="currentColor"/>
+        <rect x="13.5" y="6" width="3.5" height="12" rx="1" fill="currentColor"/>
+      </svg>
+    </button>
+
+    <button id="btnHintHUD" class="icon-btn" aria-label="hint">
+      <svg viewBox="0 0 24 24" width="22" height="22">
+        <path d="M12 2.8a6.2 6.2 0 0 0-3.6 11.25V16a1 1 0 0 0 1 1h5.2a1 1 0 0 0 1-1v-1.95A6.2 6.2 0 0 0 12 2.8z"
+              fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+        <line x1="10" y1="20" x2="14" y2="20" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+        <line x1="10.7" y1="21.7" x2="13.3" y2="21.7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      </svg>
+      <span id="hintBadge" class="hud-badge">0</span>
+    </button>
+
+    <div class="hud-info">
+      <div>
+        <span class="hud-label" data-i18n="level">LEVEL</span>
+        <span id="levelNum">1</span>
+      </div>
+      <div>
+        <span class="hud-label" data-i18n="moves">MOVES</span>
+        <span id="movesNum">0</span>
+        <span class="hud-ideal">/ <b id="idealNum">0</b></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- TITLE -->
+  <div id="screen-title" class="screen">
+    <div class="screen-inner">
+      <div class="title-glow"></div>
+      <h1 class="game-title" data-i18n="title">СОЗВУЧИЕ</h1>
+      <p class="game-subtitle" data-i18n="subtitle">головоломка о свете и звуке</p>
+      <div class="menu-buttons">
+        <button class="btn primary" id="btnPlay" data-i18n="play">Играть</button>
+        <button class="btn accent" id="btnDaily" data-i18n="daily">Ежедневный вызов</button>
+        <div class="menu-row">
+          <button class="btn" id="btnAchievements" data-i18n="achievements">Достижения</button>
+          <button class="btn" id="btnStats" data-i18n="stats">Статистика</button>
+        </div>
+        <button class="btn" id="btnLeaderboard" data-i18n="leaderboard">Рейтинг</button>
+        <div class="menu-row">
+          <button class="btn" id="btnFavorites" data-i18n="addToFavorites">В избранное</button>
+          <button class="btn" id="btnSupport" data-i18n="support">Поддержка</button>
+        </div>
+        <button class="btn" id="btnHowTo" data-i18n="howToPlay">Как играть</button>
+        <button class="btn" id="btnSettings" data-i18n="settings">Настройки</button>
+      </div>
+      <p class="best-label">
+        <span data-i18n="bestLevel">Рекорд:</span>
+        <span id="bestLevel">1</span>
+      </p>
+      <p class="rating-label">
+        <span data-i18n="rating">Рейтинг:</span>
+        <span id="ratingPoints">0</span>
+        <span class="rating-units" data-i18n="ratingPoints">очк.</span>
+      </p>
+    </div>
+  </div>
+
+  <!-- STATS -->
+  <div id="screen-stats" class="screen hidden">
+    <div class="screen-inner">
+      <h2 data-i18n="statsTitle">Статистика</h2>
+      <div class="stats-grid">
+        <div><span data-i18n="statLevels">Пройдено уровней</span><b id="statLevels">0</b></div>
+        <div><span data-i18n="statPerfect">Идеально</span><b id="statPerfect">0</b></div>
+        <div><span data-i18n="statRating">Очков рейтинга</span><b id="statRating">0</b></div>
+        <div><span data-i18n="statStreak">Лучшая серия</span><b id="statStreak">0</b></div>
+        <div><span data-i18n="statDays">Дней в игре</span><b id="statDays">0</b></div>
+        <div><span data-i18n="statDailyDone">Daily пройдено</span><b id="statDailyDone">0</b></div>
+      </div>
+      <button class="btn primary" id="btnStatsClose" data-i18n="close">Закрыть</button>
+    </div>
+  </div>
+
+  <!-- DAILY -->
+  <div id="screen-daily" class="screen hidden">
+    <div class="screen-inner">
+      <h2 data-i18n="daily">Ежедневный вызов</h2>
+      <div id="dailyDoneBadge" class="daily-done-badge hidden">✓</div>
+      <div class="daily-week" id="dailyWeek"></div>
+      <div class="daily-stats">
+        <div><span data-i18n="streakLabel">Серия</span><b id="dailyStreak">0</b></div>
+        <div><span data-i18n="bestStreak">Лучшая</span><b id="dailyBest">0</b></div>
+        <div><span data-i18n="daysTotal">Дней всего</span><b id="dailyTotal">0</b></div>
+      </div>
+      <p class="daily-note small hidden" id="dailyNext"></p>
+      <p class="daily-note" id="dailyShare">Уровень одинаков у всех игроков мира</p>
+      <p class="daily-note small" id="dailyRefresh">Новый вызов обновляется каждую полночь</p>
+      <div class="menu-buttons">
+        <button class="btn primary" id="btnDailyPlay" data-i18n="dailyPlay">Играть вызов</button>
+        <button class="btn" id="btnDailyClose" data-i18n="close">Закрыть</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ACHIEVEMENTS -->
+  <div id="screen-achievements" class="screen hidden">
+    <div class="screen-inner wide">
+      <h2 data-i18n="achievements">Достижения</h2>
+      <div class="ach-list" id="achList"></div>
+      <button class="btn primary" id="btnAchClose" data-i18n="close">Закрыть</button>
+    </div>
+  </div>
+
+  <!-- LEADERBOARD -->
+  <div id="screen-leaderboard" class="screen hidden">
+    <div class="screen-inner wide">
+      <h2 data-i18n="leaderboard">Рейтинг</h2>
+      <div class="lb-list" id="lbList"></div>
+      <p class="lb-status" id="lbStatus"></p>
+      <div class="menu-buttons">
+        <button class="btn accent" id="btnLbOpen" data-i18n="openVkLeaderboard">Открыть рейтинг VK</button>
+        <button class="btn primary" id="btnLbClose" data-i18n="close">Закрыть</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- PAUSE -->
+  <div id="screen-pause" class="screen hidden">
+    <div class="screen-inner">
+      <h2 data-i18n="pause">Пауза</h2>
+      <div class="menu-buttons">
+        <button class="btn primary" id="btnResume" data-i18n="resume">Продолжить</button>
+        <button class="btn" id="btnRestart" data-i18n="restart">Начать заново</button>
+        <button class="btn" id="btnPauseSettings" data-i18n="settings">Настройки</button>
+        <button class="btn danger" id="btnPauseMenu" data-i18n="mainMenu">Главное меню</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- HOW TO PLAY -->
+  <div id="screen-howto" class="screen hidden">
+    <div class="screen-inner wide">
+      <h2 data-i18n="howToPlay">Как играть</h2>
+      <canvas id="demoCanvas" width="280" height="280"></canvas>
+      <p class="howto-text" data-i18n="howToText"></p>
+      <button class="btn primary" id="btnHowToClose" data-i18n="close">Закрыть</button>
+    </div>
+  </div>
+
+  <!-- SETTINGS -->
+  <div id="screen-settings" class="screen hidden">
+    <div class="screen-inner">
+      <h2 data-i18n="settings">Настройки</h2>
+      <div class="settings-list">
+        <label class="setting"><span data-i18n="sound">Звук</span>
+          <input type="checkbox" id="optSound" checked></label>
+        <label class="setting"><span data-i18n="music">Музыка</span>
+          <input type="checkbox" id="optMusic" checked></label>
+        <label class="setting"><span data-i18n="vibration">Вибрация</span>
+          <input type="checkbox" id="optVibration" checked></label>
+        <label class="setting"><span data-i18n="language">Язык</span>
+          <select id="optLanguage">
+            <option value="auto" data-i18n="auto">Авто</option>
+            <option value="ru">Русский</option>
+            <option value="en">English</option>
+          </select></label>
+      </div>
+      <div class="menu-buttons">
+        <button class="btn primary" id="btnSettingsClose" data-i18n="close">Закрыть</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- SOLVED -->
+  <div id="solvedOverlay" class="hidden">
+    <div class="solved-text" data-i18n="solved">РЕШЕНО</div>
+    <div class="solved-moves" id="solvedMoves"></div>
+    <div class="solved-points" id="solvedPoints"></div>
+    <div class="solved-sub" data-i18n="levelUp">Готовься к следующему уровню</div>
+  </div>
+
+  <!-- HINT MODAL -->
+  <div id="hintModal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-card">
+      <h3 class="modal-title" data-i18n="hintModalTitle">Посмотреть рекламу?</h3>
+      <p class="modal-text" id="hintModalText"></p>
+      <div class="modal-status" id="hintModalStatus"></div>
+      <div class="modal-actions">
+        <button class="btn" id="btnHintCancel" data-i18n="cancel">Отмена</button>
+        <button class="btn primary" id="btnHintConfirm" data-i18n="confirm">Смотреть</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="tutorialHint" class="hidden"></div>
+  <div id="toast" class="hidden"></div>
+</div>
+
+<!-- VK Bridge (обязателен для VK Mini Apps) -->
+<script src="https://unpkg.com/@vkontakte/vk-bridge/dist/browser.min.js"></script>
+
+<script src="js/vk.js"></script>
+<script src="js/config.js"></script>
+<script src="js/utils.js"></script>
+<script src="js/i18n.js"></script>
+<script src="js/storage.js"></script>
+<script src="js/skins.js"></script>
+<script src="js/daily.js"></script>
+<script src="js/achievements.js"></script>
+<script src="js/solver.js"></script>
+<script src="js/hints.js"></script>
+<script src="js/rating.js"></script>
+<script src="js/leaderboard.js"></script>
+<script src="js/audio.js"></script>
+<script src="js/game.js"></script>
+<script src="js/renderer.js"></script>
+<script src="js/input.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
